@@ -2,7 +2,7 @@
 // Réseau d'abord (pour avoir la dernière version), mais si la salle capte mal on sert la copie après 2,5 s.
 // Changer VERSION à chaque mise en ligne pour vider l'ancienne copie.
 
-const VERSION = 'ma-seance-1';
+const VERSION = 'ma-seance-2';
 const FICHIERS = [
   './',
   'index.html',

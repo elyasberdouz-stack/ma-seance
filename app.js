@@ -1,9 +1,14 @@
 // Ma Séance : la séance du jour, le poids de chaque série, des boutons + / − pour les changer.
 // Tout reste sur le téléphone (localStorage) : pas de compte, pas de serveur.
 // Pages (dans l'adresse après #) : accueil, /go (ouvre direct la séance du jour : c'est la page de démarrage),
-// /seance/<id>, /seance/<id>/modifier, /historique, /reglages.
+// /seance/<id>, /seance/<id>/modifier, /historique (calendrier du mois + séances), /nutrition, /reglages.
+// Seule exception au « pas de serveur » : la nutrition envoie la photo du plat à l'IA d'Anthropic (Claude),
+// avec la clé que l'utilisateur colle dans Réglages (gardée sur le téléphone, jamais dans le code en ligne).
 
 const CLE = 'ma-seance-v1';
+const CLE_IA = 'ma-seance-cle-ia'; // à part de l'état : n'apparaît pas dans les sauvegardes exportées
+const MODELE_IA = 'claude-opus-5-5';
+const SDK_IA = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm'; // chargé seulement quand on analyse une photo
 const JOURS = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
 const JOURS_COURTS = ['Dim.', 'Lun.', 'Mar.', 'Mer.', 'Jeu.', 'Ven.', 'Sam.'];
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
@@ -17,12 +22,18 @@ const ICONES = {
   chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
   haut: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   bas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
+  photo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  couverts: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v18M4.5 3v5a2.5 2.5 0 0 0 5 0V3M17.5 21V3c-2.2 1.6-3.5 4.3-3.5 7.5V14h3.5"/></svg>',
 };
 
 const app = document.getElementById('app');
 let etat = charger();
 let courante = null;      // séance affichée (pages séance et modifier)
 let inviteInstall = null; // Android : proposition d'installation gardée pour le bouton
+let moisCal = null;       // calendrier : mois affiché « 2026-11 » (null = mois en cours)
+let jourChoisi = null;    // calendrier : jour touché, détaillé sous la grille
+let jourNutrition = null; // nutrition : jour affiché (null = aujourd'hui)
+let analyse = null;       // nutrition : photo en cours { jour, etape, image, mini, precision, resultat, erreur }
 
 // ---------- Données ----------
 
@@ -276,14 +287,98 @@ function pageModifier(s) {
     <button class="lien-danger centre" data-action="supprimer-seance">Supprimer cette séance</button>`;
 }
 
+// ---------- Calendrier : bleu = j'y suis allé, rouge = séance prévue mais pas allé, gris = repos ----------
+
+const LIBELLES_JOUR = {
+  present: 'séance faite', absent: 'pas allé', repos: 'repos', futur: 'à venir',
+  avant: "avant le début du suivi", prevu: 'séance prévue aujourd\'hui',
+};
+
+// Premier jour suivi : avant, on ne sait pas, donc on ne met pas de rouge.
+function debutSuivi() {
+  return [etat.debut, etat.historique[0]?.date, ...etat.presences].filter(Boolean).sort()[0] || aujourdhui();
+}
+
+const seancesDu = cle => etat.historique.filter(h => h.date === cle);
+const prevueLe = cle => seance(etat.planning[versDate(cle).getDay()]);
+
+function statutJour(cle) {
+  if (seancesDu(cle).length || etat.presences.includes(cle)) return 'present';
+  const auj = aujourdhui();
+  if (cle > auj) return 'futur';
+  const prevue = prevueLe(cle);
+  if (cle === auj) return prevue ? 'prevu' : 'repos';
+  if (cle < debutSuivi()) return 'avant';
+  return prevue ? 'absent' : 'repos';
+}
+
+function calendrier() {
+  const auj = aujourdhui();
+  const mois = moisCal || auj.slice(0, 7);
+  const [a, m] = mois.split('-').map(Number);
+  const decalage = (new Date(a, m - 1, 1).getDay() + 6) % 7; // semaine qui commence le lundi
+  const nbJours = new Date(a, m, 0).getDate();
+  let present = 0;
+  let absent = 0;
+  let cases = ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(n => `<span class="cal-nom" aria-hidden="true">${n}</span>`).join('');
+  cases += '<span aria-hidden="true"></span>'.repeat(decalage);
+  for (let j = 1; j <= nbJours; j++) {
+    const d = new Date(a, m - 1, j);
+    const cle = cleJour(d);
+    const st = statutJour(cle);
+    if (st === 'present') present++;
+    if (st === 'absent') absent++;
+    const classes = `cal-jour ${st}${cle === auj ? ' auj' : ''}${cle === jourChoisi ? ' choisi' : ''}`;
+    cases += `<button class="${classes}" data-action="choisir-jour" data-jour="${cle}" aria-pressed="${cle === jourChoisi}" aria-label="${dateLongue(d)} : ${LIBELLES_JOUR[st]}">${j}</button>`;
+  }
+  const taux = present + absent ? `${Math.round((100 * present) / (present + absent))} %` : '—';
+  const detail = jourChoisi?.startsWith(mois) ? detailJour(jourChoisi) : '<p class="aide">Touche un jour pour voir ce que tu as fait.</p>';
+
+  return `<section class="calendrier" aria-label="Calendrier de ${MOIS[m - 1]} ${a}">
+      <div class="cal-tete">
+        <button class="btn-rond petit" data-action="mois-precedent" aria-label="Mois précédent">${ICONES.retour}</button>
+        <h2>${MOIS[m - 1]} ${a}</h2>
+        <button class="btn-rond petit" data-action="mois-suivant" aria-label="Mois suivant"${mois >= auj.slice(0, 7) ? ' disabled' : ''}>${ICONES.chevron}</button>
+      </div>
+      <div class="cal-grille">${cases}</div>
+      <div class="cal-legende" aria-hidden="true">
+        <span><i class="pastille present"></i>J'y suis allé</span>
+        <span><i class="pastille absent"></i>Pas allé</span>
+        <span><i class="pastille repos"></i>Repos</span>
+      </div>
+      <div class="cal-bilan">
+        <div class="present"><strong>${present}</strong><span>séance${present > 1 ? 's' : ''}</span></div>
+        <div class="absent"><strong>${absent}</strong><span>ratée${absent > 1 ? 's' : ''}</span></div>
+        <div><strong>${taux}</strong><span>de présence</span></div>
+      </div>
+      <div class="cal-detail">${detail}</div>
+    </section>`;
+}
+
+function detailJour(cle) {
+  const titre = `<p class="cal-date">${dateLongue(versDate(cle))}</p>`;
+  const faites = seancesDu(cle);
+  if (faites.length) {
+    return titre + faites.map(h => `<p class="cal-seance">${esc(h.nom)}</p>
+      <ul class="cal-exos">${h.exercices.map(x => `<li><span class="nom-exo">${esc(x.nom)}</span><span class="valeurs">${listeKg(x.poids)}</span></li>`).join('')}</ul>`).join('');
+  }
+  if (etat.presences.includes(cle)) {
+    return `${titre}<p>Marqué à la main : tu y es allé.</p><button class="bouton-mini" data-action="retirer-presence">Retirer</button>`;
+  }
+  const prevue = prevueLe(cle);
+  if (cle > aujourdhui()) return `${titre}<p>${prevue ? `Prévu : ${esc(prevue.nom)}` : 'Repos prévu'}</p>`;
+  return `${titre}<p>${prevue ? `Prévu : ${esc(prevue.nom)}. ` : ''}Aucune séance enregistrée.</p>
+    <button class="bouton-mini accent" data-action="ajouter-presence">J'y suis allé ce jour-là</button>`;
+}
+
 function pageHistorique() {
-  const entete = '<header class="entete"><p class="surtitre">Ce que tu as fait</p><h1>Historique</h1></header>';
+  const entete = `<header class="entete"><p class="surtitre">Ce que tu as fait</p><h1>Historique</h1></header>${calendrier()}`;
   if (!etat.historique.length) {
-    return `${entete}<p class="vide">Rien pour l'instant. À la fin de ta séance, appuie sur <strong>Terminer la séance</strong> : elle s'affichera ici.</p>`;
+    return `${entete}<p class="vide espace">Pas encore de séance enregistrée. À la fin de ta séance, appuie sur <strong>Terminer la séance</strong> : le jour passera en bleu.</p>`;
   }
 
   const mois = aujourdhui().slice(0, 7);
-  const ceMois = etat.historique.filter(h => h.date.startsWith(mois)).length;
+  const ceMois = new Set([...etat.historique.map(h => h.date), ...etat.presences].filter(d => d.startsWith(mois))).size; // comme le calendrier
 
   // Progression : série la plus lourde au premier enregistrement → aujourd'hui, pour chaque exercice qui a bougé.
   const progres = etat.seances.flatMap(s => s.exercices.map(e => {
@@ -318,6 +413,223 @@ function pageHistorique() {
     <div class="journal">${lignes}</div>`;
 }
 
+// ---------- Nutrition : photo du plat → l'IA estime calories et macros ----------
+
+const lireCleIA = () => { try { return localStorage.getItem(CLE_IA) || ''; } catch (e) { return ''; } };
+const kcal = n => Math.round(n).toLocaleString('fr-FR');
+const grammes = n => `${Math.round(n)} g`;
+
+function somme(liste) {
+  return liste.reduce((t, r) => ({
+    kcal: t.kcal + (r.kcal || 0), proteines: t.proteines + (r.proteines || 0),
+    glucides: t.glucides + (r.glucides || 0), lipides: t.lipides + (r.lipides || 0),
+  }), { kcal: 0, proteines: 0, glucides: 0, lipides: 0 });
+}
+
+const barre = (valeur, objectif) => (objectif
+  ? `<div class="barre${valeur > objectif ? ' depasse' : ''}"><span style="width:${Math.min(100, (100 * valeur) / objectif)}%"></span></div>`
+  : '');
+
+function pageNutrition() {
+  const auj = aujourdhui();
+  const jour = jourNutrition || auj;
+  const repas = etat.repas.filter(r => r.date === jour);
+  const t = somme(repas);
+  const { objectifKcal: objK, objectifProteines: objP } = etat.reglages;
+  const veille = cleJour(new Date(versDate(jour).getTime() - 864e5));
+
+  let html = `<header class="entete"><p class="surtitre">Ce que tu manges</p><h1>Nutrition</h1></header>
+    <div class="choix-jour">
+      <button class="btn-rond petit" data-action="jour-nutri" data-jour="${veille}" aria-label="Jour précédent">${ICONES.retour}</button>
+      <p>${jour === auj ? "Aujourd'hui" : dateLongue(versDate(jour))}</p>
+      <button class="btn-rond petit" data-action="jour-nutri" data-jour="${cleJour(new Date(versDate(jour).getTime() + 864e5))}" aria-label="Jour suivant"${jour >= auj ? ' disabled' : ''}>${ICONES.chevron}</button>
+    </div>
+    <section class="carte-nutri">
+      <p class="etiquette">Calories</p>
+      <p class="gros"><strong>${kcal(t.kcal)}</strong><span>${objK ? `/ ${kcal(objK)} kcal` : 'kcal'}</span></p>
+      ${barre(t.kcal, objK)}
+      <div class="macros">
+        <div><strong>${objP ? `${Math.round(t.proteines)}<small> / ${objP} g</small>` : grammes(t.proteines)}</strong><span>Protéines</span>${barre(t.proteines, objP)}</div>
+        <div><strong>${grammes(t.glucides)}</strong><span>Glucides</span></div>
+        <div><strong>${grammes(t.lipides)}</strong><span>Lipides</span></div>
+      </div>
+      ${objK ? '' : '<p class="aide">Fixe tes objectifs dans <a href="#/reglages">Réglages</a>.</p>'}
+    </section>`;
+
+  html += analyse?.jour === jour ? carteAnalyse() : boutonsAjout();
+
+  html += `<h3 class="titre-section">Repas${repas.length ? ` · ${repas.length}` : ''}</h3>`;
+  html += repas.length
+    ? `<div class="journal">${repas.map(carteRepas).join('')}</div>`
+    : '<p class="vide">Rien de noté ce jour-là.</p>';
+
+  // Les 7 jours avant celui affiché, pour voir la tendance.
+  const jours = Array.from({ length: 7 }, (_, i) => cleJour(new Date(versDate(auj).getTime() - i * 864e5)));
+  html += `<h3 class="titre-section">7 derniers jours</h3>
+    <ul class="semaine-nutri">${jours.map(j => {
+      const s = somme(etat.repas.filter(r => r.date === j));
+      return `<li><button data-action="jour-nutri" data-jour="${j}"${j === jour ? ' aria-current="true"' : ''}>
+        <span class="nom-exo">${j === auj ? "Aujourd'hui" : dateCourte(j)}</span>
+        <span class="valeurs">${s.kcal ? `${kcal(s.kcal)} kcal · ${grammes(s.proteines)} prot.` : '—'}</span></button></li>`;
+    }).join('')}</ul>`;
+  return html;
+}
+
+function boutonsAjout() {
+  const photo = lireCleIA()
+    ? `<label class="bouton-principal photo" for="photo-plat">${ICONES.photo}<span>Prendre mon plat en photo</span></label>`
+    : `<div class="bandeau"><p>Pour estimer tes plats en photo, l'appli a besoin d'une <strong>clé IA</strong>. Ça se règle une seule fois.</p>
+        <div class="bandeau-actions"><a class="bouton-mini accent" href="#/reglages/cle-ia">Brancher l'IA</a></div></div>`;
+  return `<div class="ajout">${photo}<button class="bouton-secondaire" data-action="repas-manuel">+ Ajouter à la main</button></div>`;
+}
+
+function carteAnalyse() {
+  const a = analyse;
+  const img = `<img class="photo-plat" src="${a.image}" alt="Ton plat">`;
+  if (a.etape === 'apercu') {
+    return `<section class="analyse">${img}
+      <label class="champ"><span>Précision (facultatif)</span>
+        <input data-champ="precision" value="${esc(a.precision)}" placeholder="ex. cuit à l'huile, j'en ai mangé la moitié" enterkeyhint="go"></label>
+      <button class="bouton-principal" data-action="analyser">Estimer les calories</button>
+      <button class="lien-danger centre" data-action="annuler-analyse">Annuler</button>
+    </section>`;
+  }
+  if (a.etape === 'calcul') {
+    return `<section class="analyse">${img}<p class="attente" role="status"><span class="rond-attente" aria-hidden="true"></span>L'IA regarde ton plat… (10 à 20 s)</p></section>`;
+  }
+  if (a.etape === 'erreur') {
+    return `<section class="analyse">${img}<p class="erreur" role="alert">${esc(a.erreur)}</p>
+      <div class="rangee"><button class="bouton-mini accent" data-action="analyser">Réessayer</button><button class="bouton-mini" data-action="annuler-analyse">Annuler</button></div>
+    </section>`;
+  }
+  const r = a.resultat;
+  if (!r.est_un_plat || !r.aliments.length) {
+    return `<section class="analyse">${img}<p class="erreur" role="alert">Je ne vois pas de nourriture sur cette photo.</p>
+      <div class="rangee"><button class="bouton-mini" data-action="annuler-analyse">Reprendre une photo</button></div></section>`;
+  }
+  const t = somme(r.aliments);
+  return `<section class="analyse">${img}
+    <h2>${esc(r.plat)}</h2>
+    <p class="kcal-resultat"><strong>≈ ${kcal(t.kcal)} kcal</strong><span>entre ${kcal(r.kcal_min)} et ${kcal(r.kcal_max)}</span></p>
+    <p class="macros-ligne">Protéines ${grammes(t.proteines)} · Glucides ${grammes(t.glucides)} · Lipides ${grammes(t.lipides)}</p>
+    <ul class="aliments">${r.aliments.map(x => `<li><span class="nom-exo">${esc(x.nom)}<small>${esc(x.quantite)}</small></span><span class="valeurs">${kcal(x.kcal)} kcal</span></li>`).join('')}</ul>
+    ${r.remarque ? `<p class="note">${esc(r.remarque)}</p>` : ''}
+    <button class="bouton-principal" data-action="valider-repas">Ajouter à ma journée</button>
+    <div class="rangee centre"><button class="bouton-mini" data-action="corriger-analyse">Corriger</button><button class="bouton-mini" data-action="annuler-analyse">Annuler</button></div>
+  </section>`;
+}
+
+function carteRepas(r) {
+  const visuel = r.mini ? `<img class="mini" src="${r.mini}" alt="">` : `<span class="mini vide-mini">${ICONES.couverts}</span>`;
+  const details = r.aliments?.length
+    ? `<ul>${r.aliments.map(x => `<li><span class="nom-exo">${esc(x.nom)}<small>${esc(x.quantite)}</small></span><span class="valeurs">${kcal(x.kcal)} kcal</span></li>`).join('')}</ul>`
+    : '';
+  return `<details class="entree repas"><summary>${visuel}
+      <span class="nom">${esc(r.plat)}<small>${r.heure ? `${r.heure} · ` : ''}P ${grammes(r.proteines)}${r.aliments?.length ? ` · G ${grammes(r.glucides)} · L ${grammes(r.lipides)}` : ''}</small></span>
+      <span class="kcal-repas">${kcal(r.kcal)}<small>kcal</small></span></summary>
+    ${details}
+    <button class="lien-danger" data-action="supprimer-repas" data-id="${r.id}">Supprimer ce repas</button>
+  </details>`;
+}
+
+// Photo du téléphone → une image de 1024 px max pour l'IA, et une vignette de 120 px pour la liste.
+async function chargerPhoto(fichier) {
+  const url = URL.createObjectURL(fichier);
+  try {
+    const img = new Image();
+    await new Promise((ok, ko) => { img.onload = ok; img.onerror = ko; img.src = url; }); // decode() peut rester bloqué
+    const reduire = (max, qualite) => {
+      const r = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * r);
+      c.height = Math.round(img.naturalHeight * r);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', qualite);
+    };
+    return { image: reduire(1024, 0.82), mini: reduire(120, 0.6) };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+const ALIMENT = {
+  type: 'object',
+  properties: {
+    nom: { type: 'string' },
+    quantite: { type: 'string' },
+    kcal: { type: 'number' },
+    proteines: { type: 'number' },
+    glucides: { type: 'number' },
+    lipides: { type: 'number' },
+  },
+  required: ['nom', 'quantite', 'kcal', 'proteines', 'glucides', 'lipides'],
+  additionalProperties: false,
+};
+
+const SCHEMA_REPAS = {
+  type: 'object',
+  properties: {
+    est_un_plat: { type: 'boolean' },
+    plat: { type: 'string' },
+    aliments: { type: 'array', items: ALIMENT },
+    kcal_min: { type: 'number' },
+    kcal_max: { type: 'number' },
+    remarque: { type: 'string' },
+  },
+  required: ['est_un_plat', 'plat', 'aliments', 'kcal_min', 'kcal_max', 'remarque'],
+  additionalProperties: false,
+};
+
+const CONSIGNE_IA = `Tu estimes les calories et les macronutriments d'un repas à partir d'une photo, pour une appli de suivi personnelle.
+
+Repère chaque aliment visible et estime sa quantité à partir de la taille de l'assiette, des couverts ou de l'emballage. Pour chacun, donne les kcal, protéines, glucides et lipides en grammes. Compte l'huile de cuisson, le beurre et les sauces probables même s'ils ne se voient pas, parce que c'est là que les estimations se trompent le plus. Si l'utilisateur ajoute une précision, elle passe avant ce que tu vois sur la photo.
+
+Tout est en français. « plat » : un nom court du repas (« Poulet, riz et haricots »). « quantite » : la quantité estimée (« 200 g », « 1 cuillère à soupe »). kcal_min et kcal_max : la fourchette réaliste du repas entier. « remarque » : une phrase courte qui tutoie et dit ce qui rend l'estimation incertaine, ou une chaîne vide.
+
+Si la photo ne montre pas de nourriture, mets est_un_plat à false, aliments vide et des zéros.`;
+
+class ErreurIA extends Error {}
+
+async function estimerRepas(image, precision) {
+  let Anthropic;
+  try {
+    ({ default: Anthropic } = await import(SDK_IA));
+  } catch (e) {
+    throw new ErreurIA("Pas de réseau : l'analyse a besoin d'internet.");
+  }
+  const client = new Anthropic({ apiKey: lireCleIA(), dangerouslyAllowBrowser: true, maxRetries: 1 });
+  let reponse;
+  try {
+    reponse = await client.beta.messages.create({
+      model: MODELE_IA,
+      max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default', // si le modèle refuse, Anthropic relance la demande sur un autre modèle
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: SCHEMA_REPAS } },
+      system: CONSIGNE_IA,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.split(',')[1] } },
+          { type: 'text', text: precision ? `Précision de l'utilisateur : ${precision}` : 'Estime ce repas.' },
+        ],
+      }],
+    });
+  } catch (e) {
+    if (e instanceof Anthropic.AuthenticationError) throw new ErreurIA('Clé IA refusée : vérifie-la dans Réglages.');
+    if (e instanceof Anthropic.PermissionDeniedError) throw new ErreurIA("Cette clé n'a pas le droit d'utiliser l'IA : vérifie ton compte Anthropic.");
+    if (e instanceof Anthropic.RateLimitError) throw new ErreurIA('Trop de demandes d\'un coup : attends une minute et réessaie.');
+    if (e instanceof Anthropic.BadRequestError) throw new ErreurIA("Demande refusée par l'IA. Si ça continue, regarde s'il te reste du crédit sur console.anthropic.com.");
+    if (e instanceof Anthropic.APIConnectionError) throw new ErreurIA("Pas de réseau : l'analyse a besoin d'internet.");
+    if (e instanceof Anthropic.APIError) throw new ErreurIA("Le service IA ne répond pas bien en ce moment : réessaie dans un instant.");
+    throw e;
+  }
+  if (reponse.stop_reason === 'refusal') throw new ErreurIA("L'IA n'a pas voulu analyser cette photo.");
+  if (reponse.stop_reason === 'max_tokens') throw new ErreurIA('Réponse coupée : réessaie.');
+  const texte = reponse.content.find(b => b.type === 'text')?.text;
+  try { return JSON.parse(texte); } catch (e) { throw new ErreurIA('Réponse illisible : réessaie.'); }
+}
+
 function pageReglages() {
   const lienAuto = `webapp://${location.host}${location.pathname}#/go`;
   const jours = ORDRE_SEMAINE.map(j => `
@@ -336,6 +648,25 @@ function pageReglages() {
     <h3 class="titre-section">Boutons + / −</h3>
     <div class="bloc"><label class="ligne-jour"><span>Un appui change de</span><select data-champ="pas-defaut">${pas}</select></label></div>
     <p class="aide">Chaque exercice peut avoir son propre pas (dans « Modifier »). Pour un poids précis, touche le chiffre et tape-le.</p>
+
+    <h3 class="titre-section">Nutrition : tes objectifs par jour</h3>
+    <div class="bloc">
+      <label class="ligne-jour"><span>Calories (kcal)</span><input type="text" inputmode="numeric" data-champ="objectif-kcal" value="${etat.reglages.objectifKcal ?? ''}" placeholder="ex. 2600"></label>
+      <label class="ligne-jour"><span>Protéines (g)</span><input type="text" inputmode="numeric" data-champ="objectif-proteines" value="${etat.reglages.objectifProteines ?? ''}" placeholder="ex. 150"></label>
+    </div>
+
+    <h3 class="titre-section" id="cle-ia">Clé IA pour les photos de plats</h3>
+    <div class="bloc texte">
+      <p>L'estimation des calories passe par l'IA d'Anthropic (Claude). À faire une seule fois :</p>
+      <ol class="etapes">
+        <li>Va sur <strong>console.anthropic.com</strong> et crée un compte.</li>
+        <li><strong>Billing</strong> : ajoute du crédit. Compte environ 2 centimes par photo : 5 $ font à peu près 250 photos.</li>
+        <li><strong>API Keys</strong> → <strong>Create Key</strong>, puis copie la clé.</li>
+        <li>Colle-la ici :</li>
+      </ol>
+      <input type="password" data-champ="cle-ia" value="${esc(lireCleIA())}" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Clé IA">
+      <p class="aide"><strong data-etat-cle>${lireCleIA() ? 'Clé enregistrée ✓' : 'Pas encore de clé.'}</strong> Elle reste sur ce téléphone : elle n'est ni dans le code en ligne ni dans tes sauvegardes.</p>
+    </div>
 
     <h3 class="titre-section">Ouverture automatique à la salle</h3>
     <div class="bloc texte">
@@ -376,12 +707,14 @@ function route() {
 
   if (courante) app.innerHTML = sous === 'modifier' ? pageModifier(courante) : pageSeance(courante);
   else if (page === 'historique') app.innerHTML = pageHistorique();
+  else if (page === 'nutrition') app.innerHTML = pageNutrition();
   else if (page === 'reglages') app.innerHTML = pageReglages();
   else app.innerHTML = pageAccueil();
 
-  const onglet = ['historique', 'reglages'].includes(page) ? page : 'accueil';
+  const onglet = ['historique', 'nutrition', 'reglages'].includes(page) ? page : 'accueil';
   document.querySelectorAll('.nav a').forEach(a => a.toggleAttribute('aria-current', a.dataset.page === onglet));
-  window.scrollTo(0, 0);
+  const cible = page === 'reglages' && id && document.getElementById(id); // #/reglages/cle-ia
+  if (cible) cible.scrollIntoView(); else window.scrollTo(0, 0);
 }
 
 function rafraichir() {
@@ -520,9 +853,90 @@ const ACTIONS = {
     URL.revokeObjectURL(a.href);
   },
 
+  // --- Calendrier ---
+  'mois-precedent': () => changerMois(-1),
+  'mois-suivant': () => changerMois(1),
+
+  'choisir-jour'(b) {
+    jourChoisi = jourChoisi === b.dataset.jour ? null : b.dataset.jour;
+    rafraichir();
+  },
+
+  'ajouter-presence'() {
+    if (!etat.presences.includes(jourChoisi)) etat.presences.push(jourChoisi);
+    sauver();
+    rafraichir();
+    toast('Jour marqué en bleu');
+  },
+
+  'retirer-presence'() {
+    etat.presences = etat.presences.filter(j => j !== jourChoisi);
+    sauver();
+    rafraichir();
+  },
+
+  // --- Nutrition ---
+  'jour-nutri'(b) {
+    jourNutrition = b.dataset.jour === aujourdhui() ? null : b.dataset.jour;
+    rafraichir();
+  },
+
+  async analyser() {
+    const a = analyse;
+    a.etape = 'calcul';
+    rafraichir();
+    try {
+      a.resultat = await estimerRepas(a.image, a.precision.trim());
+      a.etape = 'resultat';
+    } catch (e) {
+      a.etape = 'erreur';
+      a.erreur = e instanceof ErreurIA ? e.message : "Quelque chose n'a pas marché : réessaie.";
+    }
+    if (analyse === a && location.hash.startsWith('#/nutrition')) rafraichir();
+  },
+
+  'corriger-analyse'() {
+    analyse.etape = 'apercu';
+    rafraichir();
+    app.querySelector('[data-champ="precision"]')?.focus();
+  },
+
+  'annuler-analyse'() {
+    analyse = null;
+    rafraichir();
+  },
+
+  'valider-repas'() {
+    const { resultat: r, mini, jour } = analyse;
+    const t = somme(r.aliments);
+    ajouterRepas(jour, { plat: r.plat, aliments: r.aliments, ...t, kcalMin: r.kcal_min, kcalMax: r.kcal_max, mini });
+    analyse = null;
+    rafraichir();
+    toast(`${kcal(t.kcal)} kcal ajoutées`);
+  },
+
+  'repas-manuel'() {
+    const plat = prompt("Qu'as-tu mangé ?");
+    if (!plat?.trim()) return;
+    const k = lirePoids(prompt('Combien de calories (kcal) ?') ?? '');
+    if (k === null) { toast('Calories non comprises'); return; }
+    const p = lirePoids(prompt('Et de protéines (g) ? Laisse vide si tu ne sais pas.') ?? '') ?? 0;
+    ajouterRepas(jourNutrition || aujourdhui(), { plat: plat.trim(), aliments: [], kcal: k, proteines: p, glucides: 0, lipides: 0 });
+    rafraichir();
+  },
+
+  'supprimer-repas'(b) {
+    const r = etat.repas.find(x => x.id === b.dataset.id);
+    if (!r || !confirm(`Supprimer « ${r.plat} » ?`)) return;
+    etat.repas = etat.repas.filter(x => x !== r);
+    sauver();
+    rafraichir();
+  },
+
   reinitialiser() {
     if (!confirm('Tout effacer ? Tes séances, tes poids et ton historique seront perdus.')) return;
     etat = structuredClone(PROGRAMME_DEFAUT);
+    etat.debut = aujourdhui();
     sauver();
     location.hash = '#/';
     toast('Tout est remis à zéro');
@@ -547,6 +961,26 @@ function deplacer(e, sens) {
   rafraichir();
 }
 
+function changerMois(sens) {
+  const [a, m] = (moisCal || aujourdhui().slice(0, 7)).split('-').map(Number);
+  const cle = cleJour(new Date(a, m - 1 + sens, 1)).slice(0, 7);
+  moisCal = cle === aujourdhui().slice(0, 7) ? null : cle;
+  jourChoisi = null;
+  rafraichir();
+}
+
+// Les vignettes de plus de 7 jours sont retirées : le téléphone ne garde que quelques Mo pour l'appli.
+function ajouterRepas(jour, repas) {
+  const maintenant = new Date();
+  const heure = jour === aujourdhui() ? `${maintenant.getHours()}h${String(maintenant.getMinutes()).padStart(2, '0')}` : '';
+  const arrondis = { kcal: Math.round(repas.kcal), proteines: Math.round(repas.proteines), glucides: Math.round(repas.glucides), lipides: Math.round(repas.lipides) };
+  etat.repas.push({ id: identifiant('repas'), date: jour, heure, ...repas, ...arrondis });
+  etat.repas.sort((a, b) => a.date.localeCompare(b.date));
+  const limite = cleJour(new Date(maintenant.getTime() - 7 * 864e5));
+  etat.repas.forEach(r => { if (r.mini && r.date < limite) delete r.mini; });
+  sauver();
+}
+
 app.addEventListener('click', ev => {
   const b = ev.target.closest('[data-action]');
   if (b && !b.disabled) ACTIONS[b.dataset.action]?.(b);
@@ -556,7 +990,21 @@ app.addEventListener('click', ev => {
 app.addEventListener('input', ev => {
   const champ = ev.target.dataset.champ;
   const v = ev.target.value;
-  if (champ === 'seance-nom') {
+  if (champ === 'precision') {
+    analyse.precision = v;
+    return;
+  }
+  if (champ === 'cle-ia') {
+    try {
+      if (v.trim()) localStorage.setItem(CLE_IA, v.trim()); else localStorage.removeItem(CLE_IA);
+      app.querySelector('[data-etat-cle]').textContent = v.trim() ? 'Clé enregistrée ✓' : 'Pas encore de clé.';
+    } catch (e) { toast("Impossible d'enregistrer la clé sur ce téléphone"); }
+    return;
+  }
+  if (champ === 'objectif-kcal' || champ === 'objectif-proteines') {
+    const n = lirePoids(v);
+    etat.reglages[champ === 'objectif-kcal' ? 'objectifKcal' : 'objectifProteines'] = n > 0 ? Math.round(n) : null;
+  } else if (champ === 'seance-nom') {
     courante.nom = v.trim() || 'Séance';
     app.querySelector('[data-titre]').textContent = courante.nom;
   } else if (['nom', 'series', 'reps', 'pas', 'note', 'poids-serie'].includes(champ)) {
@@ -630,6 +1078,32 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !app.querySelector('input:focus')) rafraichir();
 });
 
+// Le champ photo est hors de la page (dans index.html) : au retour de l'appareil photo, l'iPhone
+// redessine la page (visibilitychange) et un champ recréé entre-temps perdrait la photo choisie.
+document.getElementById('photo-plat').addEventListener('change', async ev => {
+  const fichier = ev.target.files[0];
+  ev.target.value = ''; // pour pouvoir reprendre la même photo
+  if (!fichier) return;
+  try {
+    const { image, mini } = await chargerPhoto(fichier);
+    analyse = { jour: jourNutrition || aujourdhui(), etape: 'apercu', image, mini, precision: '' };
+    rafraichir();
+  } catch (e) {
+    toast("Cette photo n'a pas pu être lue");
+  }
+});
+
+// Touche « Entrée » dans la précision : lance l'analyse.
+app.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' && ev.target.dataset.champ === 'precision') ACTIONS.analyser();
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// Premier jour suivi par le calendrier (avant : pas de rouge).
+if (!etat.debut) {
+  etat.debut = etat.historique[0]?.date || aujourdhui();
+  sauver();
+}
 
 route();

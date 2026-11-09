@@ -47,5 +47,7 @@ const PROGRAMME_DEFAUT = {
   ],
   historique: [],
   enCours: null,
-  reglages: { pas: 2.5, bandeauMasque: false },
+  presences: [], // jours marqués « j'y suis allé » à la main dans le calendrier (séance pas enregistrée)
+  repas: [],     // nutrition : un repas par entrée (date, plat, kcal, protéines, glucides, lipides, aliments, mini-photo)
+  reglages: { pas: 2.5, bandeauMasque: false, objectifKcal: null, objectifProteines: null },
 };

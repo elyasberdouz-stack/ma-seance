@@ -17,6 +17,9 @@
   --baisse: #ffa24a;
   --baisse-doux: rgba(255, 162, 74, .12);
   --danger: #ff7a7a;
+  /* Calendrier : bleu = j'y suis allé, rouge = pas allé (texte blanc lisible sur les deux) */
+  --present: #2f6fed;
+  --absent: #d63c42;
   --rayon: 20px;
   --haut: env(safe-area-inset-top, 0px);
   --bas: env(safe-area-inset-bottom, 0px);
@@ -77,6 +80,7 @@ h1 { font-size: 34px; line-height: 1.1; font-weight: 800; letter-spacing: -.02em
   color: var(--texte-2); font-size: 13px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .06em;
   margin: 28px 4px 10px;
+  scroll-margin-top: calc(var(--haut) + 16px);
 }
 
 /* ---------- Boutons ---------- */
@@ -266,6 +270,125 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .entree[open] summary svg { transform: rotate(90deg); }
 .entree ul { padding: 0 16px 6px; }
 
+/* ---------- Calendrier ---------- */
+.calendrier {
+  background: var(--surface); border: 1px solid var(--ligne); border-radius: 24px;
+  padding: 14px 14px 16px; margin-bottom: 8px;
+}
+.cal-tete { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.cal-tete h2 { font-size: 19px; font-weight: 800; text-transform: capitalize; }
+.cal-grille { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.cal-nom { text-align: center; color: var(--texte-3); font-size: 12px; font-weight: 700; padding-bottom: 2px; }
+.cal-jour {
+  aspect-ratio: 1; min-height: 38px; border-radius: 12px;
+  display: grid; place-items: center;
+  font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+  background: var(--surface-2); color: var(--texte-2);
+  transition: transform .08s;
+}
+.cal-jour:active { transform: scale(.92); }
+.cal-jour.present { background: var(--present); color: #fff; }
+.cal-jour.absent { background: var(--absent); color: #fff; }
+.cal-jour.repos { background: transparent; box-shadow: inset 0 0 0 1px var(--surface-3); color: var(--texte-3); }
+.cal-jour.futur, .cal-jour.avant { background: transparent; color: var(--texte-3); }
+.cal-jour.prevu { box-shadow: inset 0 0 0 2px var(--present); color: var(--texte); }
+.cal-jour.auj { font-weight: 900; text-decoration: underline; text-underline-offset: 3px; }
+.cal-jour.choisi { outline: 2px solid var(--texte); outline-offset: 2px; }
+.cal-legende { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 14px 2px 0; color: var(--texte-2); font-size: 13px; }
+.cal-legende span { display: flex; align-items: center; gap: 6px; }
+.pastille { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
+.pastille.present { background: var(--present); }
+.pastille.absent { background: var(--absent); }
+.pastille.repos { box-shadow: inset 0 0 0 1px var(--texte-3); }
+.cal-bilan { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.cal-bilan div { background: var(--surface-2); border-radius: 14px; padding: 10px 12px; }
+.cal-bilan strong { display: block; font-size: 24px; font-weight: 800; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.cal-bilan span { color: var(--texte-2); font-size: 13px; }
+.cal-bilan .present strong { color: #7ea6ff; }
+.cal-bilan .absent strong { color: #ff8a8f; }
+.cal-detail { margin-top: 14px; display: grid; gap: 8px; justify-items: start; color: var(--texte-2); font-size: 15px; }
+.cal-detail .aide { padding: 0; }
+.cal-date { color: var(--texte); font-weight: 800; }
+.cal-seance { color: var(--texte); font-weight: 700; }
+.cal-exos { width: 100%; display: grid; }
+.cal-exos li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 8px 0; font-size: 14px; }
+.cal-exos li + li { border-top: 1px solid var(--ligne); }
+.vide.espace { margin-top: 12px; }
+
+/* ---------- Nutrition ---------- */
+.choix-jour { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -6px 0 12px; }
+.choix-jour p { font-weight: 700; color: var(--texte-2); text-align: center; flex: 1; }
+.carte-nutri {
+  position: relative; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--ligne); border-radius: 24px; padding: 20px;
+}
+.carte-nutri .gros { display: flex; align-items: baseline; gap: 8px; margin: 6px 0 10px; }
+.carte-nutri .gros strong { font-size: 44px; font-weight: 800; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.carte-nutri .gros span { color: var(--texte-2); font-weight: 700; }
+.barre { height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.barre span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.barre.depasse span { background: var(--baisse); }
+.macros { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+.macros > div { background: var(--surface-2); border-radius: 14px; padding: 10px 12px; display: grid; gap: 2px; align-content: start; }
+.macros strong { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.macros strong small { font-size: 13px; font-weight: 700; color: var(--texte-2); }
+.macros span { color: var(--texte-2); font-size: 13px; }
+.macros .barre { height: 5px; margin-top: 6px; }
+.carte-nutri .aide { padding: 12px 0 0; }
+.carte-nutri .aide a, .bandeau a { color: var(--accent); font-weight: 700; }
+.bandeau .bouton-mini.accent { color: var(--sur-accent); }
+
+.ajout { margin-top: 12px; }
+.ajout .bandeau { margin-bottom: 0; }
+.bouton-principal.photo { gap: 10px; cursor: pointer; }
+.bouton-principal.photo svg { stroke-width: 2.4; }
+
+.analyse {
+  margin-top: 12px; background: var(--surface); border: 1px solid rgba(198, 244, 50, .3);
+  border-radius: 24px; padding: 14px; display: grid; gap: 12px;
+}
+.photo-plat { width: 100%; max-height: 300px; object-fit: cover; border-radius: 16px; display: block; background: var(--surface-2); }
+.analyse h2 { font-size: 24px; font-weight: 800; line-height: 1.15; }
+.analyse .champ { margin: 0; }
+.analyse .lien-danger.centre { margin-top: 0; }
+.kcal-resultat { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: -6px; }
+.kcal-resultat strong { font-size: 30px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+.kcal-resultat span, .macros-ligne { color: var(--texte-2); font-size: 14px; }
+.macros-ligne { margin-top: -8px; }
+.aliments, .repas ul { display: grid; }
+.aliments li, .repas li {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; font-size: 15px;
+}
+.aliments li + li, .repas li + li { border-top: 1px solid var(--ligne); }
+.aliments small, .repas li small { display: block; color: var(--texte-3); font-size: 13px; }
+.attente { display: flex; align-items: center; gap: 12px; color: var(--texte-2); padding: 4px 2px; }
+.rond-attente {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  border: 3px solid var(--surface-3); border-top-color: var(--accent);
+  animation: tourne .8s linear infinite;
+}
+@keyframes tourne { to { transform: rotate(360deg); } }
+.erreur { color: var(--danger); font-weight: 600; }
+.rangee.centre { justify-content: center; }
+
+.repas summary { padding: 10px 12px 10px 10px; }
+.repas .mini { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; flex: none; }
+.repas .vide-mini { display: grid; place-items: center; background: var(--surface-2); color: var(--texte-3); }
+.repas .nom small { display: block; color: var(--texte-3); font-size: 13px; font-weight: 500; }
+.kcal-repas { font-weight: 800; font-size: 17px; text-align: right; font-variant-numeric: tabular-nums; }
+.kcal-repas small { display: block; color: var(--texte-3); font-size: 12px; font-weight: 600; }
+.repas ul { padding: 0 16px; }
+.repas .lien-danger { margin: 2px 16px 10px; }
+
+.semaine-nutri { background: var(--surface); border: 1px solid var(--ligne); border-radius: var(--rayon); overflow: hidden; }
+.semaine-nutri li + li { border-top: 1px solid var(--ligne); }
+.semaine-nutri button {
+  width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px;
+  padding: 14px 16px; text-align: left; font-size: 15px;
+}
+.semaine-nutri button[aria-current] { background: var(--accent-doux); }
+.semaine-nutri button[aria-current] .nom-exo { color: var(--accent); font-weight: 700; }
+
 /* ---------- Réglages ---------- */
 .bloc { background: var(--surface); border: 1px solid var(--ligne); border-radius: var(--rayon); overflow: hidden; }
 .bloc.texte { padding: 16px; display: grid; gap: 12px; justify-items: start; color: var(--texte-2); font-size: 15px; }
@@ -273,6 +396,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .ligne-jour + .ligne-jour { border-top: 1px solid var(--ligne); }
 .ligne-jour span { font-weight: 600; }
 .ligne-jour select { width: auto; max-width: 60%; min-width: 150px; }
+.ligne-jour input { width: 120px; text-align: right; font-variant-numeric: tabular-nums; }
+.bloc.texte input { width: 100%; }
 .aide { color: var(--texte-3); font-size: 13px; padding: 8px 4px 0; }
 .aide.haut { padding: 0 4px 10px; margin-top: -4px; }
 .etapes { display: grid; gap: 6px; padding-left: 20px; list-style: decimal; }
