@@ -630,6 +630,215 @@ async function estimerRepas(image, precision) {
   try { return JSON.parse(texte); } catch (e) { throw new ErreurIA('Réponse illisible : réessaie.'); }
 }
 
+// ---------- Corps : poids et mensurations, une entrée par jour ----------
+
+const MENSURATIONS = [
+  { cle: 'bras', nom: 'Tour de bras', unite: 'cm' },
+  { cle: 'poitrine', nom: 'Tour de poitrine', unite: 'cm' },
+  { cle: 'taille', nom: 'Tour de taille', unite: 'cm' },
+  { cle: 'cuisse', nom: 'Tour de cuisse', unite: 'cm' },
+  { cle: 'gras', nom: 'Masse grasse', unite: '%' },
+];
+const PERIODES = [['1m', '1 mois', 31], ['3m', '3 mois', 92], ['1a', '1 an', 366], ['tout', 'Tout', Infinity]];
+
+let saisieCorps = null;    // pesée en cours de saisie { date, poids, bras, … }
+let periodeCorps = '3m';   // période du graphique
+
+const pesees = () => etat.mesures.filter(m => m.poids > 0);
+const mesureDu = date => etat.mesures.find(m => m.date === date);
+const unitesCorps = (n, unite) => `${nombre(n)} ${unite}`;
+
+// Dernière pesée faite au plus tard `jours` jours avant la dernière : la référence d'un « en 7 jours ».
+function peseeAvant(liste, jours) {
+  const derniere = liste.at(-1);
+  const limite = cleJour(new Date(versDate(derniere.date).getTime() - jours * 864e5));
+  return liste.filter(m => m.date <= limite).at(-1);
+}
+
+// Pré-remplit la saisie : la mesure de ce jour s'il y en a une, sinon les dernières valeurs connues.
+function preparerSaisie(date) {
+  const existante = mesureDu(date);
+  const avant = etat.mesures.filter(m => m.date < date);
+  const derniere = cle => avant.filter(m => m[cle] > 0).at(-1)?.[cle] ?? null;
+  saisieCorps = { date, poids: existante?.poids ?? derniere('poids') ?? 70 };
+  for (const m of MENSURATIONS) saisieCorps[m.cle] = existante ? existante[m.cle] ?? null : null;
+  saisieCorps.rappel = Object.fromEntries(MENSURATIONS.map(m => [m.cle, derniere(m.cle)])); // affiché en indice
+}
+
+function pageCorps() {
+  if (!saisieCorps) preparerSaisie(aujourdhui());
+  const liste = pesees();
+  const objectif = etat.reglages.objectifPoids;
+  let html = '<header class="entete"><p class="surtitre">Ton poids, tes mesures</p><h1>Corps</h1></header>';
+
+  // En-tête : le poids actuel, et comment il a bougé.
+  if (liste.length) {
+    const actuel = liste.at(-1);
+    const ecart = (ref, libelle) => {
+      if (!ref || ref === actuel) return '';
+      const d = arrondi(actuel.poids - ref.poids);
+      const bon = objectif ? Math.sign(d) === Math.sign(objectif - ref.poids) : null;
+      const classe = d === 0 || bon === null ? '' : bon ? ' hausse' : ' baisse';
+      return `<li><span class="delta${classe}">${d > 0 ? '+' : d < 0 ? '−' : '±'}${nombre(Math.abs(d))} kg</span>${libelle}</li>`;
+    };
+    const reste = objectif ? arrondi(objectif - actuel.poids) : null;
+    html += `<section class="carte-corps">
+      <p class="etiquette">Poids · ${actuel.date === aujourdhui() ? "aujourd'hui" : depuis(actuel.date)}</p>
+      <p class="gros"><strong>${nombre(actuel.poids)}</strong><span>kg</span></p>
+      <ul class="ecarts">${ecart(peseeAvant(liste, 7), 'en 7 jours')}${ecart(peseeAvant(liste, 30), 'en 30 jours')}${ecart(liste[0], `depuis le ${dateCourte(liste[0].date).toLowerCase()}`)}</ul>
+      ${objectif ? `<p class="aide">${reste === 0 ? `Objectif de ${nombre(objectif)} kg atteint 🎯` : `Objectif ${nombre(objectif)} kg : encore ${nombre(Math.abs(reste))} kg à ${reste > 0 ? 'prendre' : 'perdre'}.`}</p>` : ''}
+    </section>`;
+  }
+
+  html += carteSaisieCorps();
+
+  html += `<h3 class="titre-section">Évolution du poids</h3>
+    <div class="periodes" role="group" aria-label="Période du graphique">${PERIODES.map(([cle, nom]) =>
+      `<button class="bouton-mini${periodeCorps === cle ? ' accent' : ''}" data-action="periode-corps" data-periode="${cle}" aria-pressed="${periodeCorps === cle}">${nom}</button>`).join('')}</div>
+    ${graphiquePoids(liste, objectif)}
+    <div class="bloc"><label class="ligne-jour"><span>Objectif de poids (kg)</span><input type="text" inputmode="decimal" data-champ="objectif-poids" value="${objectif ? nombre(objectif) : ''}" placeholder="ex. 75"></label></div>`;
+
+  // Mensurations : première mesure → dernière, pour chaque mesure prise au moins une fois.
+  const progres = MENSURATIONS.map(m => {
+    const avec = etat.mesures.filter(x => x[m.cle] > 0);
+    if (!avec.length) return '';
+    const [premiere, derniere] = [avec[0][m.cle], avec.at(-1)[m.cle]];
+    const ecart = arrondi(derniere - premiere); // neutre : un tour de taille qui monte n'est pas « en hausse » comme un poids soulevé
+    return `<li><span class="nom-exo">${m.nom}</span><span class="valeurs">${avec.length > 1 ? `${nombre(premiere)} → ` : ''}${unitesCorps(derniere, m.unite)}${avec.length > 1 && ecart ? `<span class="delta">${ecart > 0 ? '+' : '−'}${nombre(Math.abs(ecart))}</span>` : ''}</span></li>`;
+  }).join('');
+  if (progres) html += `<h3 class="titre-section">Mensurations</h3><p class="aide haut">Ta première mesure et la dernière.</p><ul class="progres">${progres}</ul>`;
+
+  // Le journal : c'est aussi la version « tableau » du graphique.
+  if (etat.mesures.length) {
+    html += `<h3 class="titre-section">Toutes tes mesures</h3><div class="journal">${[...etat.mesures].reverse().map(m => {
+      const autres = MENSURATIONS.filter(x => m[x.cle] > 0);
+      return `<details class="entree"><summary><span class="date">${dateCourte(m.date)}</span><span class="nom">${m.poids ? `${nombre(m.poids)} kg` : '—'}${autres.length ? `<small>+ ${autres.length} mesure${autres.length > 1 ? 's' : ''}</small>` : ''}</span>${ICONES.chevron}</summary>
+        <ul>${autres.map(x => `<li><span class="nom-exo">${x.nom}</span><span class="valeurs">${unitesCorps(m[x.cle], x.unite)}</span></li>`).join('')}</ul>
+        <div class="rangee actions-mesure"><button class="bouton-mini" data-action="modifier-mesure" data-date="${m.date}">Modifier</button><button class="lien-danger" data-action="supprimer-mesure" data-date="${m.date}">Supprimer</button></div>
+      </details>`;
+    }).join('')}</div>`;
+  }
+  return html;
+}
+
+function carteSaisieCorps() {
+  const s = saisieCorps;
+  const existe = !!mesureDu(s.date);
+  const champs = MENSURATIONS.map(m => `
+    <label class="ligne-jour"><span>${m.nom}<small>${s.rappel[m.cle] ? `dernière : ${unitesCorps(s.rappel[m.cle], m.unite)}` : m.unite}</small></span>
+      <input type="text" inputmode="decimal" data-champ="corps-mesure" data-cle="${m.cle}" value="${s[m.cle] ? nombre(s[m.cle]) : ''}" placeholder="${m.unite}"></label>`).join('');
+  const ouvertes = MENSURATIONS.some(m => s[m.cle]);
+  return `<section class="saisie-corps">
+    <div class="saisie-tete">
+      <p class="etiquette">${existe ? 'Modifier la pesée' : 'Pesée'}</p>
+      <input type="date" data-champ="corps-date" value="${s.date}" max="${aujourdhui()}" aria-label="Date de la pesée">
+    </div>
+    <div class="ligne-serie pesee">
+      <button class="pas" data-action="poids-moins" aria-label="Baisser de 0,1 kg">${ICONES.moins}</button>
+      <button class="poids" data-action="poids-saisir" aria-label="Poids : ${nombre(s.poids)} kg. Toucher pour le taper">
+        <span class="chiffre"><span class="valeur" data-poids>${nombre(s.poids)}</span><span class="unite">kg</span></span>
+      </button>
+      <button class="pas" data-action="poids-plus" aria-label="Monter de 0,1 kg">${ICONES.plus}</button>
+    </div>
+    <details class="mensurations"${ouvertes ? ' open' : ''}><summary>Mensurations (facultatif)${ICONES.chevron}</summary><div class="bloc">${champs}</div></details>
+    <button class="bouton-principal" data-action="enregistrer-mesure">${existe ? 'Mettre à jour' : 'Enregistrer'}</button>
+  </section>`;
+}
+
+// Courbe du poids : une seule série (pas de légende, le titre la nomme), ligne 2 px, point final
+// étiqueté, grille fine. Toucher le graphique déplace un repère vertical qui lit la pesée la plus proche.
+function graphiquePoids(liste, objectif) {
+  if (liste.length < 2) {
+    return `<p class="vide">${liste.length ? 'Encore une pesée' : 'Deux pesées'} et ta courbe apparaît ici.</p>`;
+  }
+  const jours = PERIODES.find(p => p[0] === periodeCorps)[2];
+  const fin = versDate(aujourdhui()).getTime();
+  const premiere = versDate(liste[0].date).getTime(); // pas de vide avant la toute première pesée
+  const debut = jours === Infinity ? premiere : Math.max(premiere, fin - (jours - 1) * 864e5);
+  let points = liste.filter(m => versDate(m.date).getTime() >= debut);
+  if (points.length < 2) points = liste.slice(-2); // période trop courte : on montre au moins les deux dernières
+  const x0 = Math.min(debut, versDate(points[0].date).getTime());
+  const x1 = Math.max(fin, versDate(points.at(-1).date).getTime());
+
+  // Axe vertical : de joli nombre en joli nombre, l'objectif compris s'il est proche.
+  const valeurs = points.map(p => p.poids);
+  if (objectif && Math.abs(objectif - valeurs.at(-1)) <= 10) valeurs.push(objectif);
+  let [bas, haut] = [Math.min(...valeurs), Math.max(...valeurs)];
+  const pas = [0.5, 1, 2, 5, 10, 20].find(p => (haut - bas) / p <= 3) || 50; // 4 à 5 graduations au plus
+  bas = Math.floor((bas - pas * 0.25) / pas) * pas;
+  haut = Math.ceil((haut + pas * 0.25) / pas) * pas;
+
+  const L = 340, H = 196, g = 30, d = 46, h = 12, b = 26; // largeur, hauteur, marges gauche/droite/haut/bas
+  const X = t => g + ((t - x0) / Math.max(1, x1 - x0)) * (L - g - d);
+  const Y = v => h + (1 - (v - bas) / (haut - bas)) * (H - h - b);
+  const pts = points.map(p => ({ ...p, x: X(versDate(p.date).getTime()), y: Y(p.poids) }));
+
+  let grille = '';
+  for (let v = bas; v <= haut + 1e-9; v += pas) {
+    grille += `<line class="grille" x1="${g}" x2="${L - d}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axe" x="${g - 6}" y="${Y(v)}" text-anchor="end" dominant-baseline="middle">${nombre(arrondi(v))}</text>`;
+  }
+  const dates = [x0, (x0 + x1) / 2, x1].map(t => new Date(t));
+  const ancres = ['start', 'middle', 'end'];
+  const axeX = dates.map((dt, i) => `<text class="axe" x="${X(dt.getTime())}" y="${H - 6}" text-anchor="${ancres[i]}">${dt.getDate()} ${MOIS_COURTS[dt.getMonth()]}</text>`).join('');
+  const cible = objectif && objectif >= bas && objectif <= haut
+    ? `<line class="objectif" x1="${g}" x2="${L - d}" y1="${Y(objectif)}" y2="${Y(objectif)}"/><text class="axe" x="${L - d + 6}" y="${Y(objectif)}" dominant-baseline="middle">obj.</text>`
+    : '';
+  const chemin = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('');
+  const dernier = pts.at(-1);
+
+  return `<figure class="graphique" data-points='${JSON.stringify(pts.map(p => [p.x, p.y, p.poids, p.date]))}'
+      tabindex="0" aria-label="Courbe du poids, ${points.length} pesées, de ${nombre(points[0].poids)} à ${nombre(dernier.poids)} kg. Flèches gauche et droite pour lire chaque pesée.">
+    <p class="lecture" aria-live="polite"><strong>${nombre(dernier.poids)} kg</strong><span>${dateCourte(dernier.date)} · touche la courbe pour lire une pesée</span></p>
+    <svg viewBox="0 0 ${L} ${H}" role="img" aria-hidden="true">
+      ${grille}${cible}${axeX}
+      <path class="courbe" d="${chemin}"/>
+      <circle class="point" cx="${dernier.x}" cy="${dernier.y}" r="4"/>
+      <text class="etiquette-fin" x="${dernier.x + 8}" y="${dernier.y}" dominant-baseline="middle">${nombre(dernier.poids)}</text>
+      <g class="repere" hidden><line y1="${h}" y2="${H - b}"/><circle r="4"/></g>
+    </svg>
+  </figure>`;
+}
+
+function lecture(fig, poids, date, suite) {
+  fig.querySelector('.lecture strong').textContent = `${nombre(poids)} kg`;
+  fig.querySelector('.lecture span').textContent = `${dateCourte(date)}${suite}`;
+}
+
+// Repère du graphique : suit le doigt (ou les flèches du clavier) et s'aimante à la pesée la plus proche.
+function montrerRepere(fig, voulu) {
+  const pts = JSON.parse(fig.dataset.points);
+  const i = Math.max(0, Math.min(pts.length - 1, voulu));
+  const [x, y, poids, date] = pts[i];
+  fig.dataset.i = i;
+  const repere = fig.querySelector('.repere');
+  repere.removeAttribute('hidden'); // sur un élément SVG, .hidden = false ne fait rien
+  repere.querySelector('line').setAttribute('x1', x);
+  repere.querySelector('line').setAttribute('x2', x);
+  repere.querySelector('circle').setAttribute('cx', x);
+  repere.querySelector('circle').setAttribute('cy', y);
+  const ecart = i > 0 ? arrondi(poids - pts[i - 1][2]) : 0;
+  lecture(fig, poids, date, ecart ? ` · ${ecart > 0 ? '+' : '−'}${nombre(Math.abs(ecart))} kg depuis la pesée d'avant` : '');
+}
+
+function repereAuDoigt(ev) {
+  const fig = ev.target.closest('.graphique');
+  if (!fig) return;
+  const pts = JSON.parse(fig.dataset.points);
+  const r = fig.getBoundingClientRect();
+  const x = ((ev.clientX - r.left) / r.width) * 340;
+  let proche = 0;
+  pts.forEach((p, i) => { if (Math.abs(p[0] - x) < Math.abs(pts[proche][0] - x)) proche = i; });
+  montrerRepere(fig, proche);
+}
+
+function cacherRepere(fig) {
+  fig.querySelector('.repere').setAttribute('hidden', '');
+  const pts = JSON.parse(fig.dataset.points);
+  const [, , poids, date] = pts.at(-1);
+  lecture(fig, poids, date, ' · touche la courbe pour lire une pesée');
+  delete fig.dataset.i;
+}
+
 function pageReglages() {
   const lienAuto = `webapp://${location.host}${location.pathname}#/go`;
   const jours = ORDRE_SEMAINE.map(j => `
@@ -654,6 +863,7 @@ function pageReglages() {
       <label class="ligne-jour"><span>Calories (kcal)</span><input type="text" inputmode="numeric" data-champ="objectif-kcal" value="${etat.reglages.objectifKcal ?? ''}" placeholder="ex. 2600"></label>
       <label class="ligne-jour"><span>Protéines (g)</span><input type="text" inputmode="numeric" data-champ="objectif-proteines" value="${etat.reglages.objectifProteines ?? ''}" placeholder="ex. 150"></label>
     </div>
+    ${pesees().length ? `<p class="aide">Repère pour la muscu : 1,6 à 2 g de protéines par kg, soit ${Math.round(1.6 * pesees().at(-1).poids)} à ${Math.round(2 * pesees().at(-1).poids)} g pour tes ${nombre(pesees().at(-1).poids)} kg.</p>` : ''}
 
     <h3 class="titre-section" id="cle-ia">Clé IA pour les photos de plats</h3>
     <div class="bloc texte">
@@ -703,15 +913,17 @@ function route() {
     return;
   }
   courante = page === 'seance' ? seance(id) : null;
+  if (page !== 'corps') saisieCorps = null; // en revenant sur Corps, la pesée repart sur aujourd'hui
   if (page === 'seance' && !courante) { location.replace('#/'); return; }
 
   if (courante) app.innerHTML = sous === 'modifier' ? pageModifier(courante) : pageSeance(courante);
   else if (page === 'historique') app.innerHTML = pageHistorique();
   else if (page === 'nutrition') app.innerHTML = pageNutrition();
+  else if (page === 'corps') app.innerHTML = pageCorps();
   else if (page === 'reglages') app.innerHTML = pageReglages();
   else app.innerHTML = pageAccueil();
 
-  const onglet = ['historique', 'nutrition', 'reglages'].includes(page) ? page : 'accueil';
+  const onglet = ['historique', 'nutrition', 'corps', 'reglages'].includes(page) ? page : 'accueil';
   document.querySelectorAll('.nav a').forEach(a => a.toggleAttribute('aria-current', a.dataset.page === onglet));
   const cible = page === 'reglages' && id && document.getElementById(id); // #/reglages/cle-ia
   if (cible) cible.scrollIntoView(); else window.scrollTo(0, 0);
@@ -933,6 +1145,51 @@ const ACTIONS = {
     rafraichir();
   },
 
+  // --- Corps ---
+  'poids-plus': () => changerPoidsCorps(0.1),
+  'poids-moins': () => changerPoidsCorps(-0.1),
+
+  'poids-saisir'() {
+    const saisi = prompt('Ton poids (kg)', nombre(saisieCorps.poids));
+    if (saisi === null) return;
+    const n = lirePoids(saisi);
+    if (!(n >= 20 && n <= 300)) { toast('Poids non compris'); return; }
+    saisieCorps.poids = n;
+    app.querySelector('[data-poids]').textContent = nombre(n);
+  },
+
+  'enregistrer-mesure'() {
+    const s = saisieCorps;
+    const entree = { date: s.date, poids: s.poids };
+    for (const m of MENSURATIONS) if (s[m.cle] > 0) entree[m.cle] = s[m.cle];
+    const i = etat.mesures.findIndex(m => m.date === s.date);
+    if (i >= 0) etat.mesures[i] = entree; else etat.mesures.push(entree);
+    etat.mesures.sort((a, b) => a.date.localeCompare(b.date));
+    sauver();
+    toast(`${nombre(s.poids)} kg enregistrés${s.date === aujourdhui() ? '' : ` pour le ${dateCourte(s.date).toLowerCase()}`}`);
+    preparerSaisie(s.date);
+    rafraichir();
+  },
+
+  'modifier-mesure'(b) {
+    preparerSaisie(b.dataset.date);
+    rafraichir();
+    app.querySelector('.saisie-corps').scrollIntoView({ block: 'center' });
+  },
+
+  'supprimer-mesure'(b) {
+    if (!confirm(`Supprimer la mesure du ${dateCourte(b.dataset.date)} ?`)) return;
+    etat.mesures = etat.mesures.filter(m => m.date !== b.dataset.date);
+    sauver();
+    if (saisieCorps?.date === b.dataset.date) preparerSaisie(b.dataset.date);
+    rafraichir();
+  },
+
+  'periode-corps'(b) {
+    periodeCorps = b.dataset.periode;
+    rafraichir();
+  },
+
   reinitialiser() {
     if (!confirm('Tout effacer ? Tes séances, tes poids et ton historique seront perdus.')) return;
     etat = structuredClone(PROGRAMME_DEFAUT);
@@ -959,6 +1216,13 @@ function deplacer(e, sens) {
   [liste[i], liste[j]] = [liste[j], liste[i]];
   sauver();
   rafraichir();
+}
+
+function changerPoidsCorps(sens) {
+  saisieCorps.poids = Math.max(20, arrondi(saisieCorps.poids + sens));
+  app.querySelector('[data-poids]').textContent = nombre(saisieCorps.poids);
+  app.querySelector('[data-action="poids-saisir"]').setAttribute('aria-label', `Poids : ${nombre(saisieCorps.poids)} kg. Toucher pour le taper`);
+  vibrer();
 }
 
 function changerMois(sens) {
@@ -1001,7 +1265,15 @@ app.addEventListener('input', ev => {
     } catch (e) { toast("Impossible d'enregistrer la clé sur ce téléphone"); }
     return;
   }
-  if (champ === 'objectif-kcal' || champ === 'objectif-proteines') {
+  if (champ === 'corps-mesure') {
+    const n = lirePoids(v);
+    saisieCorps[ev.target.dataset.cle] = n > 0 ? n : null;
+    return; // enregistré avec le bouton
+  }
+  if (champ === 'objectif-poids') {
+    const n = lirePoids(v);
+    etat.reglages.objectifPoids = n >= 20 ? n : null;
+  } else if (champ === 'objectif-kcal' || champ === 'objectif-proteines') {
     const n = lirePoids(v);
     etat.reglages[champ === 'objectif-kcal' ? 'objectifKcal' : 'objectifProteines'] = n > 0 ? Math.round(n) : null;
   } else if (champ === 'seance-nom') {
@@ -1029,7 +1301,13 @@ app.addEventListener('input', ev => {
 
 app.addEventListener('change', async ev => {
   const champ = ev.target.dataset.champ;
-  if (champ === 'ou') {
+  if (champ === 'objectif-poids') {
+    rafraichir(); // l'objectif change l'en-tête et le graphique : on redessine une fois le champ quitté
+  } else if (champ === 'corps-date') {
+    if (!ev.target.value) return;
+    preparerSaisie(ev.target.value > aujourdhui() ? aujourdhui() : ev.target.value);
+    rafraichir();
+  } else if (champ === 'ou') {
     exoDe(ev.target).ou = ev.target.checked;
     sauver();
   } else if (champ === 'planning') {
@@ -1091,6 +1369,23 @@ document.getElementById('photo-plat').addEventListener('change', async ev => {
   } catch (e) {
     toast("Cette photo n'a pas pu être lue");
   }
+});
+
+// Graphique du poids : le doigt (ou la souris) lit la pesée la plus proche ; flèches au clavier.
+app.addEventListener('pointerdown', repereAuDoigt);
+app.addEventListener('pointermove', repereAuDoigt);
+app.addEventListener('pointerout', ev => {
+  const fig = ev.target.closest?.('.graphique');
+  if (fig && ev.pointerType === 'mouse' && !fig.contains(ev.relatedTarget)) cacherRepere(fig);
+});
+app.addEventListener('keydown', ev => {
+  const fig = ev.target.closest?.('.graphique');
+  if (!fig || !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(ev.key)) return;
+  ev.preventDefault();
+  if (ev.key === 'Escape') { cacherRepere(fig); return; }
+  const n = JSON.parse(fig.dataset.points).length;
+  const i = fig.dataset.i === undefined ? n - 1 : Number(fig.dataset.i);
+  montrerRepere(fig, { ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: n - 1 }[ev.key]);
 });
 
 // Touche « Entrée » dans la précision : lance l'analyse.

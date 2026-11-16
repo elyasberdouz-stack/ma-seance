@@ -202,6 +202,7 @@ h1 { font-size: 34px; line-height: 1.1; font-weight: 800; letter-spacing: -.02em
   font-size: 12px; font-weight: 800; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
   font-variant-numeric: tabular-nums; line-height: 1.4;
 }
+.delta { color: var(--texte-2); background: var(--surface-3); }
 .delta.hausse { color: var(--accent); background: var(--accent-doux); }
 .delta.baisse { color: var(--baisse); background: var(--baisse-doux); }
 
@@ -388,6 +389,60 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 }
 .semaine-nutri button[aria-current] { background: var(--accent-doux); }
 .semaine-nutri button[aria-current] .nom-exo { color: var(--accent); font-weight: 700; }
+
+/* ---------- Corps ---------- */
+.carte-corps {
+  position: relative; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--ligne); border-radius: 24px; padding: 20px;
+  margin-bottom: 12px;
+}
+.carte-corps .gros { display: flex; align-items: baseline; gap: 6px; margin: 6px 0 10px; }
+.carte-corps .gros strong { font-size: 52px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+.carte-corps .gros span { color: var(--texte-2); font-weight: 700; font-size: 18px; }
+.ecarts { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--texte-2); font-size: 14px; }
+.ecarts li { display: flex; align-items: center; gap: 6px; }
+.carte-corps .aide { padding: 12px 0 0; }
+
+.saisie-corps {
+  background: var(--surface); border: 1px solid var(--ligne); border-radius: 24px;
+  padding: 16px; display: grid; gap: 12px;
+}
+.saisie-tete { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.saisie-tete input[type="date"] { width: auto; min-height: 40px; padding: 0 10px; font-size: 16px; color: var(--texte-2); }
+.pesee { padding: 0; }
+.pesee .poids .valeur { font-size: 40px; }
+.mensurations summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  color: var(--texte-2); font-weight: 600; font-size: 15px; padding: 6px 2px; cursor: pointer; list-style: none;
+}
+.mensurations summary::-webkit-details-marker { display: none; }
+.mensurations summary svg { width: 18px; height: 18px; color: var(--texte-3); transition: transform .2s; }
+.mensurations[open] summary svg { transform: rotate(90deg); }
+.mensurations .bloc { margin-top: 8px; background: var(--surface-2); }
+.mensurations .ligne-jour span small { display: block; color: var(--texte-3); font-size: 12px; font-weight: 500; }
+.mensurations .ligne-jour input { background: var(--surface); }
+
+.periodes { display: flex; gap: 6px; margin-bottom: 10px; }
+.periodes .bouton-mini { flex: 1; padding: 0 8px; }
+.graphique {
+  position: relative; margin: 0 0 12px;
+  background: var(--surface); border: 1px solid var(--ligne); border-radius: var(--rayon);
+  padding: 12px 6px 6px; touch-action: pan-y; -webkit-user-select: none; user-select: none;
+}
+.graphique svg { display: block; width: 100%; height: auto; overflow: visible; stroke: none; stroke-width: 0; } /* annule le style des icônes */
+.graphique [hidden] { display: none !important; } /* l'attribut hidden seul ne masque pas un <g> SVG */
+.graphique .grille { stroke: var(--surface-3); stroke-width: 1; }
+.graphique .objectif { stroke: var(--texte-3); stroke-width: 1; }
+.graphique .axe { fill: var(--texte-3); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.graphique .courbe { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.graphique .point, .graphique .repere circle { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.graphique .etiquette-fin { fill: var(--texte); font-size: 13px; font-weight: 800; }
+.graphique .repere line { stroke: var(--texte-2); stroke-width: 1; }
+.lecture { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 0 10px 6px; min-height: 44px; }
+.lecture strong { font-size: 20px; font-weight: 800; }
+.lecture span { color: var(--texte-3); font-size: 13px; font-weight: 600; }
+.entree .nom small { display: block; color: var(--texte-3); font-size: 13px; font-weight: 500; }
+.actions-mesure { justify-content: space-between; align-items: center; padding: 4px 16px 12px; }
 
 /* ---------- Réglages ---------- */
 .bloc { background: var(--surface); border: 1px solid var(--ligne); border-radius: var(--rayon); overflow: hidden; }
